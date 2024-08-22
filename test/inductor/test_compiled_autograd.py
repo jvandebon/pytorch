@@ -2488,13 +2488,7 @@ known_failures_re = re.compile(
     r"^test_(sparse|profiler|gradcheck|checkpoint|named_tensor)"
 )
 
-# Bugs needing investigation:
-skipped_tests = {
-    # These test unconventional usage of saved tensor hooks do not leak or crash
-    # Running these tests succeed, but somehow cause other tests to fail
-    "test_saved_tensor_hooks_extra_exit_during_bw_no_crash",
-    "test_saved_tensor_hooks_extra_enter_during_bw_no_leak",
-}
+skipped_tests = {}
 
 known_failing_tests = {
     "test_current_graph_task_execution_order",  # torch._dynamo.exc.TorchRuntimeError: Failed running call_function <
