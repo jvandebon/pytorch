@@ -56,6 +56,7 @@ from typing import (
 from typing_extensions import Literal, TypeGuard
 
 import torch
+import torch._C._instruction_counter as i_counter
 import torch._functorch.config
 import torch._inductor.config as inductor_config
 import torch.fx.experimental.symbolic_shapes
@@ -3106,3 +3107,43 @@ def get_user_object_from_id(obj_id):
 def store_user_object_weakref(obj):
     obj_id = id(obj)
     user_obj_id_to_weakref[obj_id] = weakref.ref(obj)
+
+
+class CompileTimeInstructionCounter:
+    _counter: int = 0
+    _id: int = -1
+
+    @classmethod
+    def start(cls) -> None:
+        if cls._id != -1:
+            raise RuntimeError("CompileTimeInstructionCounter is already started")
+        cls._id = i_counter.start()
+
+    @classmethod
+    def end(cls) -> None:
+        cls._counter += i_counter.end(cls._id)
+        cls._id = -1
+
+    @classmethod
+    def clear(cls) -> None:
+        cls._counter = 0
+
+    @classmethod
+    def value(cls) -> int:
+        return cls._counter
+
+
+class CompileTimeInstructionCollector:
+    def __init__(self):
+        pass
+
+    def __enter__(self):
+        if config.record_compile_time_instruction_count:
+            self.started = True
+            CompileTimeInstructionCounter.start()
+        else:
+            self.started = False
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if self.started:
+            CompileTimeInstructionCounter.end()
