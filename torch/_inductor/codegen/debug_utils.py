@@ -96,7 +96,7 @@ class DebugPrinterManager:
             if V.graph.cpp_wrapper:
                 if config.abi_compatible:
                     V.graph.wrapper_code.writeline(
-                        f'aoti_torch_print_tensor_handle({arg}, "{launch_prefix} - {kernel_name} - {arg}");'
+                        f'aoti_torch_print_tensor_handle({arg}, "{arg}", "{launch_prefix}", "{kernel_name}");'
                     )
                 else:
                     # TODO: add non-abi compatible mode debug printing info

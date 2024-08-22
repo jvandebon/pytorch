@@ -549,7 +549,9 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_view_dtype(
 
 AOTI_TORCH_EXPORT void aoti_torch_print_tensor_handle(
     AtenTensorHandle self,
-    const char* msg);
+    const char* tensor_name,
+    const char* launch_prefix,
+    const char* kernel_name);
 
 #ifdef USE_CUDA
 
