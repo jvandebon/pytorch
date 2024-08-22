@@ -281,6 +281,7 @@ class GradScaler:
                         per_device_found_inf.get(device),
                         per_device_inv_scale.get(device),
                     )
+
         return per_device_found_inf._per_device_tensors
 
     def unscale_(self, optimizer: torch.optim.Optimizer) -> None:
@@ -333,6 +334,7 @@ class GradScaler:
         assert self._scale is not None
         inv_scale = self._scale.double().reciprocal().float()
         found_inf = torch.full((), 0.0, dtype=torch.float32, device=self._scale.device)
+
         optimizer_state["found_inf_per_device"] = self._unscale_grads_(
             optimizer, inv_scale, found_inf, False
         )
