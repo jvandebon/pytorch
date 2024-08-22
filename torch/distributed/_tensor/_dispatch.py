@@ -233,7 +233,7 @@ class OpDispatcher:
             else:
                 if op_call == aten._amp_foreach_non_finite_check_and_unscale_.default:
                     found_inf = args[1]
-                    work = mesh.get_group().allreduce(found_inf)
+                    work = mesh.get_group().allreduce(found_inf)  # type: ignore[call-overload]
                     work.wait()
                 return None
         elif _is_out_variant_op(op_call):
