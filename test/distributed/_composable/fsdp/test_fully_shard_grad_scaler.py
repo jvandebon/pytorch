@@ -1,4 +1,5 @@
 # Owner(s): ["oncall: distributed"]
+import copy
 import torch
 import torch.nn as nn
 from torch.amp.grad_scaler import GradScaler, OptState
@@ -51,16 +52,16 @@ class TestFullyShardGradientScaler(FSDPTest):
         unscaled_grad = opt.param_groups[0]["params"][0].grad.to_local().clone()
         self.assertEqual(unscaled_grad, inital_grad * inv_scale)
         initial_scale = scaler.get_scale()
-        initial_state = len(opt.state.items())
+        initial_state = copy.copy(opt.state)
 
         scaler.step(opt)
-        steped_state = len(opt.state.items())
+        steped_state = copy.copy(opt.state)
         if has_inf:
             # assert parameters are the same before/after
-            self.assertEqual(steped_state, initial_state)
+            self.assertEqual(steped_state.items(), initial_state.items())
         else:
             # new parameters here if no inf found during .unscale_()
-            self.assertTrue(steped_state > initial_state)
+            self.assertNotEqual(steped_state.items(), initial_state.items())
 
         scaler.update()
         updated_scale = scaler.get_scale()

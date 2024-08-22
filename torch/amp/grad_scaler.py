@@ -281,15 +281,6 @@ class GradScaler:
                         per_device_found_inf.get(device),
                         per_device_inv_scale.get(device),
                     )
-                    if "DTensor" in grads[0].__class__.__name__:
-                        # max_tensor is a DTensor here but not import here, add `hasattr` to avoid the
-                        # lintruner error:  "Tensor" has no attribute "full_tensor"
-                        max_tensor = per_device_found_inf.get(device).max()
-                        if hasattr(max_tensor, "full_tensor"):
-                            found_inf = max_tensor.full_tensor()
-                        per_device_found_inf = _MultiDeviceReplicator(found_inf)
-                        per_device_found_inf.get(device)
-
         return per_device_found_inf._per_device_tensors
 
     def unscale_(self, optimizer: torch.optim.Optimizer) -> None:
@@ -342,11 +333,6 @@ class GradScaler:
         assert self._scale is not None
         inv_scale = self._scale.double().reciprocal().float()
         found_inf = torch.full((), 0.0, dtype=torch.float32, device=self._scale.device)
-        if optimizer.param_groups[0]["params"] is not None:
-            # if optimizer has params as DTensor, we initialize found_inf as DTensor by DTensor.new_full()
-            if "DTensor" in optimizer.param_groups[0]["params"][0].__class__.__name__:
-                found_inf = optimizer.param_groups[0]["params"][0].new_full((), 0.0)
-
         optimizer_state["found_inf_per_device"] = self._unscale_grads_(
             optimizer, inv_scale, found_inf, False
         )
