@@ -331,12 +331,11 @@ class TORCH_API ProcessGroupNCCL : public Backend {
     std::vector<at::Tensor> result() override;
 
    protected:
-   
-   // The process group name
-   std::string pgName_;
-   
-   // The process group description
-   std::string pgDesc_;
+    // The process group name
+    std::string pgName_;
+
+    // The process group description
+    std::string pgDesc_;
 
     // The cached list of CUDA devices to operate on
     at::Device device_;

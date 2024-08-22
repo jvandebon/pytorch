@@ -2445,7 +2445,7 @@ c10::intrusive_ptr<ProcessGroupNCCL::WorkNCCL> ProcessGroupNCCL::initWork(
     const std::vector<at::Tensor>& outputs, // TODO(kwen2501): necessary?
     bool record) {
   auto r = c10::make_intrusive<ProcessGroupNCCL::WorkNCCL>(
-      pg_uid_, 
+      pg_uid_,
       pg_desc_,
       device,
       rank,
