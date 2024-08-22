@@ -131,7 +131,6 @@ class BuiltinVariable(VariableTracker):
             chr,
             divmod,
             float,
-            getattr,
             int,
             len,
             max,
@@ -844,26 +843,12 @@ class BuiltinVariable(VariableTracker):
 
             handlers.append(constant_fold_handler)
 
-        error_msg = f"builtin: {fn.__name__} {arg_types} {has_kwargs}"
-        if len(handlers) == 0:
-            return lambda *args: unimplemented(error_msg)
-        elif len(handlers) == 1:
-            (handler,) = handlers
-
-            def builtin_dispatch(tx: "InstructionTranslator", args, kwargs):
-                rv = handler(tx, args, kwargs)
+        def builtin_dispatch(tx: "InstructionTranslator", args, kwargs):
+            for f in handlers:
+                rv = f(tx, args, kwargs)
                 if rv:
                     return rv
-                unimplemented(error_msg)
-
-        else:
-
-            def builtin_dispatch(tx: "InstructionTranslator", args, kwargs):
-                for fn in handlers:
-                    rv = fn(tx, args, kwargs)
-                    if rv:
-                        return rv
-                unimplemented(error_msg)
+            unimplemented(f"builtin: {fn.__name__} {arg_types} {has_kwargs}")
 
         return builtin_dispatch
 
@@ -1652,7 +1637,6 @@ class BuiltinVariable(VariableTracker):
         from .. import trace_rules
         from . import (
             ConstantVariable,
-            GetAttrVariable,
             TorchInGraphFunctionVariable,
             UserFunctionVariable,
         )
@@ -1698,6 +1682,7 @@ class BuiltinVariable(VariableTracker):
         else:
             source = None
 
+        # TODO(rec): this whole clause might now be redundant
         if name in {"__bases__", "__base__", "__flags__"}:
             try:
                 value = obj.as_python_constant()
@@ -1726,21 +1711,6 @@ class BuiltinVariable(VariableTracker):
 
         if isinstance(obj, variables.NNModuleVariable):
             return obj.var_getattr(tx, name)
-        elif isinstance(
-            obj,
-            (
-                variables.TensorVariable,
-                variables.NamedTupleVariable,
-                variables.ConstantVariable,
-                variables.DistributedVariable,
-                variables.UserDefinedClassVariable,
-                variables.UserDefinedObjectVariable,
-            ),
-        ):
-            try:
-                return obj.var_getattr(tx, name)
-            except NotImplementedError:
-                return GetAttrVariable(obj, name, **options)
         elif isinstance(obj, TorchInGraphFunctionVariable):
             # Get OpOverload from an OpOverloadPacket, e.g., torch.ops.aten.add.default.
             member = getattr(obj.value, name)
@@ -1764,11 +1734,8 @@ class BuiltinVariable(VariableTracker):
                 return SourcelessBuilder.create(tx, member)
         elif istype(obj, UserFunctionVariable) and name in ("__name__", "__module__"):
             return ConstantVariable.create(getattr(obj.fn, name))
-        else:
-            try:
-                return obj.var_getattr(tx, name)
-            except NotImplementedError:
-                return GetAttrVariable(obj, name, **options)
+
+        return obj.var_getattr(tx, name)
 
     def call_setattr(
         self,
