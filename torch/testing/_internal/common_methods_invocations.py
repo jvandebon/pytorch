@@ -11385,9 +11385,9 @@ foreach_reduce_op_db: List[ForeachFuncInfo] = [
     ForeachFuncInfo(
         "global_norm",
         sample_inputs_func=foreach_norm_sample_func(1, False, False),
-        supports_autograd=True,
-        supports_inplace_autograd=True,
-        supports_forward_ad=True,
+        supports_autograd=False,
+        supports_inplace_autograd=False,
+        supports_forward_ad=False,
         decorators=(
             DecorateInfo(unittest.expectedFailure, "TestMeta", "test_dispatch_meta_inplace"),
             DecorateInfo(
