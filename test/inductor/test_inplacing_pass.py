@@ -97,7 +97,11 @@ class TestReinplacingPassCorrectness(InductorTestCase):
         def f(x):
             out = torch.empty_like(x)
             _, new_out = auto_functionalized(
-                sin._opoverload, x=x, out=out, _out_base=out, _all_bases=[out]
+                sin._opoverload,
+                x=x,
+                out=out,
+                _all_bases=[out],
+                _observe_mutation_from=[["out"]],
             )
             y = out * new_out
             return new_out, y
@@ -125,8 +129,8 @@ class TestReinplacingPassCorrectness(InductorTestCase):
             auto_functionalized = torch.ops.higher_order.auto_functionalized(
                 torch.ops.test_view.boo.default,
                 x=select,
-                _x_base=arg0_1,
                 _all_bases=[arg0_1],
+                _observe_mutation_from=[["x"]],
             )
             getitem_1 = auto_functionalized[1]
             copy_ = torch.ops.aten.copy_.default(arg0_1, getitem_1)
@@ -146,8 +150,8 @@ class TestReinplacingPassCorrectness(InductorTestCase):
             auto_functionalized = torch.ops.higher_order.auto_functionalized(
                 torch.ops.test_view.boo.default,
                 x=select,
-                _x_base=arg0_1,
                 _all_bases=[arg0_1],
+                _observe_mutation_from=[["x"]],
             )
             getitem_1 = auto_functionalized[1]
             copy_ = torch.ops.aten.copy_.default(arg0_1, getitem_1)
@@ -167,8 +171,8 @@ class TestReinplacingPassCorrectness(InductorTestCase):
             auto_functionalized = torch.ops.higher_order.auto_functionalized(
                 torch.ops.test_view.boo.default,
                 x=select,
-                _x_base=arg0_1,
                 _all_bases=[arg0_1],
+                _observe_mutation_from=[["x"]],
             )
             getitem_1 = auto_functionalized[1]
             use_another_view = another_view * 10
@@ -189,8 +193,8 @@ class TestReinplacingPassCorrectness(InductorTestCase):
             auto_functionalized = torch.ops.higher_order.auto_functionalized(
                 torch.ops.test_view.boo.default,
                 x=select,
-                _x_base=arg0_1,
                 _all_bases=[arg0_1],
+                _observe_mutation_from=[["x"]],
             )
             getitem_1 = auto_functionalized[1]
             return
@@ -210,8 +214,8 @@ class TestReinplacingPassCorrectness(InductorTestCase):
             auto_functionalized = torch.ops.higher_order.auto_functionalized(
                 torch.ops.test_view.boo.default,
                 x=select,
-                _x_base=a,
                 _all_bases=[a],
+                _observe_mutation_from=[["x"]],
             )
             getitem_1 = auto_functionalized[1]
             return another_view
