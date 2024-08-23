@@ -4019,6 +4019,96 @@ class CppScheduling(BaseScheduling):
             self._can_fuse_horizontal_impl(node1, node2) and not node1.is_reduction()
         ) or self.can_fuse_vertical_outer_loop(node1, node2)
 
+    def try_loop_split(self, nodes):
+        """
+        Apply loop split optimization.
+        When one of the indexing_exprs contains a division, we eliminate the division by splitting the loop
+        to avoid non-contiguous loads, subject to the following conditions:
+            1. No reduction and no mudular index for all nodes.
+            2. Only one node's one indexing_exprs contains a division, according to this indexing_exprs,
+               we can get the dimension that needs to be split, and the split dimension is contiguous
+               in all other indexing_exprs.
+
+        For example, if the node's var_ranges: {z0: 2, z1: 9216, z2: 960} and indexing_exprs:
+        {'index0': 8847360*z0 + 960*z1 + z2, 'index1': 32*z0 + (z2//30), 'index2': z2},
+        we will split z2 -> 30*z2 + z3, then the node's var_ranges will be changed to
+        {z0: 2, z1: 9216, z2: 32, z3: 30} and indexing_exprs will be changed to
+        {'index0': 8847360*z0 + 960*z1 + 30*z2 + z3, 'index1': 32*z0 + z2, 'index2': 30*z2 + z3}.
+        """
+        # No reduction and no mudular
+        if any(
+            len(node.group[1][1]) != 0
+            or any(
+                expr.has(ModularIndexing) for expr in node._body.indexing_exprs.values()
+            )
+            for node in nodes
+        ):
+            return nodes
+
+        split_var = None
+        split_number = None
+        divide_index_name = None
+        num_div = 0
+        match_div = False
+
+        for node in nodes:
+            expr_matched = False
+            _, original_body, _ = node.node.get_default_sizes_body()
+            for name, expr in original_body.indexing_exprs.items():
+                num_div += expr.count(FloorDiv)
+                if expr.count(FloorDiv) == 1:
+                    div_expr = expr.find(FloorDiv).pop()
+                    split_var = div_expr.args[0]
+                    split_number = div_expr.args[1]
+                    divide_index_name = name
+                    expr_matched = (
+                        isinstance(split_number, sympy.core.numbers.Integer)
+                        and isinstance(split_var, sympy.core.symbol.Symbol)
+                        and divide_index_name is not None
+                    )
+
+            match_div = expr_matched and all(
+                stride_at_vec_range(
+                    expr, split_var, cpu_vec_isa.pick_vec_isa().nelements(torch.float32)
+                )
+                == 1
+                for name, expr in original_body.indexing_exprs.items()
+                if name != divide_index_name
+            )
+
+        # Only one node contains a division, and the split dimension is contiguous in all other indexing_exprs.
+        if not match_div or num_div != 1:
+            return nodes
+
+        for node in nodes:
+
+            def recompute_sizes_body_func(sizes, body, vars):
+                index_size, reduce_size = sizes
+                index_vars, reduce_vars = vars
+                split_idx = index_vars.index(split_var)
+                new_index_size = index_size.copy()
+                new_index_size[split_idx] = index_size[split_idx] // split_number
+                new_index_size.insert(split_idx + 1, split_number)
+                (new_index_vars, _), var_ranges = dependencies.index_vars_no_squeeze(
+                    new_index_size, reduce_size, prefix="y"
+                )
+                iter_vars = new_index_vars.copy()
+                divisor_var = iter_vars.pop(split_idx + 1)
+                iter_vars[split_idx] = split_number * iter_vars[split_idx] + divisor_var
+                body = ir.LoopBody(body, [iter_vars, []], var_ranges)
+                return (
+                    (new_index_size, reduce_size),
+                    body,
+                    (new_index_vars, reduce_vars),
+                )
+
+            # Here decide the final loop order
+            node.recompute_size_and_body(
+                recompute_sizes_body_func=recompute_sizes_body_func
+            )
+
+        return nodes
+
     def codegen_outer_loop_node(
         self,
         node: OuterLoopFusedSchedulerNode,
@@ -4221,6 +4311,7 @@ class CppScheduling(BaseScheduling):
             self.codegen_outer_loop_node(node)
         else:
             nodes: List[SchedulerNode] = node.get_nodes()  # type: ignore[assignment]
+            nodes = self.try_loop_split(nodes)
             cpp_kernel_proxy = CppKernelProxy(kernel_group)
             cpp_kernel_proxy.codegen_nodes(nodes)
             kernel_group.finalize_kernel(cpp_kernel_proxy, nodes)
