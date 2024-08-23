@@ -29,6 +29,9 @@ SIDE_EFFECTS: Dict[OpType, _EffectType] = {
     call_torchbind: _EffectType.ORDERED,
 }
 
+if torch.distributed.is_available():
+    SIDE_EFFECTS[torch.ops._c10d_functional.wait_tensor.default] = _EffectType.ORDERED
+
 
 def _register_effectful_op(op: OpType, effect: _EffectType):
     assert isinstance(

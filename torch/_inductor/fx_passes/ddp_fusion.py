@@ -22,6 +22,10 @@ from typing import (
 import torch
 import torch.fx as fx
 from torch._dynamo.utils import counters
+from torch._functorch._aot_autograd.utils import (
+    get_with_effects_users,
+    is_with_effects_op,
+)
 from torch.fx.passes.graph_transform_observer import GraphTransformObserver
 from torch.fx.passes.shape_prop import _extract_tensor_metadata, TensorMetadata
 from torch.utils._pytree import tree_flatten, tree_map, tree_unflatten
@@ -80,6 +84,17 @@ class CommBlock:
     outputs: Set[fx.Node]
 
 
+def is_with_effects_wait_tensor(node: torch.fx.Node) -> bool:
+    return is_with_effects_op(node, torch.ops._c10d_functional.wait_tensor.default)
+
+
+def is_wait_tensor(node: torch.fx.Node) -> bool:
+    return (
+        node.op == "call_function"
+        and node.target == torch.ops._c10d_functional.wait_tensor.default
+    ) or is_with_effects_op(node, torch.ops._c10d_functional.wait_tensor.default)
+
+
 def get_comm_block(comm_node: fx.Node) -> Optional[CommBlock]:
     """
     Given a collective node (e.g., allreduce), find out all the nodes belong to
@@ -95,16 +110,13 @@ def get_comm_block(comm_node: fx.Node) -> Optional[CommBlock]:
     wait_nodes = []
     inputs, _ = tree_flatten((comm_node.args, comm_node.kwargs))
     input_nodes = [inp for inp in inputs if isinstance(inp, fx.Node)]
-    wait_prefixes = "wait_tensor"
+
     # If the users of the wait node are following items, we consinder them
     # to be a part of the output.
     intermediate_outputs = ("split", "reshape", "getitem", "detach", "alias")
 
     first_user = next(iter(comm_node.users))
-    if (
-        len(comm_node.users) == 1
-        and first_user.target == torch.ops._c10d_functional.wait_tensor.default
-    ):
+    if len(comm_node.users) == 1 and is_wait_tensor(first_user):
         # Collective with only one output
         node_list = [comm_node, first_user]
         wait_nodes.append(first_user)
@@ -117,7 +129,10 @@ def get_comm_block(comm_node: fx.Node) -> Optional[CommBlock]:
             if len(user.users) != 1:
                 return None
             wait_node = next(iter(user.users))
-            if wait_node.target != torch.ops._c10d_functional.wait_tensor.default:
+            if (
+                wait_node.target != torch.ops._c10d_functional.wait_tensor.default
+                or is_with_effects_wait_tensor(wait_node)
+            ):
                 return None
             wait_nodes.append(wait_node)
             node_list.append(user)
@@ -128,6 +143,7 @@ def get_comm_block(comm_node: fx.Node) -> Optional[CommBlock]:
     # Identify all the outputs of this collective block.
     outputs: Set[fx.Node] = set()
     nodes = collections.deque(wait_nodes)
+
     while nodes:
         node = nodes.popleft()
         for user in node.users:
@@ -218,11 +234,20 @@ def _fuse_allreduce_by_concat(
         fused_comm_node = call_function(graph, last_comm_node.target, args, kwargs)
 
     # Create a new Wait node.
+    last_wait_node_args = last_wait_node.args
+    last_wait_node_kwargs = last_wait_node.kwargs
+
+    if is_with_effects_wait_tensor(last_wait_node):
+        last_wait_node_args = last_wait_node.args[2:]
+        last_wait_node_kwargs = last_wait_node.kwargs
+
     with graph.inserting_after(fused_comm_node):
-        flatten_args, spec = tree_flatten((last_wait_node.args, last_wait_node.kwargs))
+        flatten_args, spec = tree_flatten((last_wait_node_args, last_wait_node_kwargs))
         flatten_args[0] = fused_comm_node
         args, kwargs = tree_unflatten(flatten_args, spec)
-        fused_wait_node = call_function(graph, last_wait_node.target, args, kwargs)
+        fused_wait_node = call_function(
+            graph, torch.ops._c10d_functional.wait_tensor.default, args, kwargs
+        )
 
     # Move the fused all_reduce and its args to right after the input node
     nodes_to_move = cat_inputs + [cat_node, div_node, fused_comm_node, fused_wait_node]
@@ -271,7 +296,15 @@ def _fuse_with_coalesced_op(
     # Create a new wait node.
     getitem_nodes = []
     wait_nodes = []
-    flatten_args, spec = tree_flatten((last_wait_node.args, last_wait_node.kwargs))
+
+    last_wait_node_args = last_wait_node.args
+    last_wait_node_kwargs = last_wait_node.kwargs
+
+    if is_with_effects_wait_tensor(last_wait_node):
+        last_wait_node_args = last_wait_node.args[2:]
+        last_wait_node_kwargs = last_wait_node.kwargs
+
+    flatten_args, spec = tree_flatten((last_wait_node_args, last_wait_node_kwargs))
     for idx in range(len(all_input_nodes)):
         with graph.inserting_after(fused_comm_node):
             gi_node = call_function(graph, operator.getitem, (fused_comm_node, idx))
@@ -279,7 +312,11 @@ def _fuse_with_coalesced_op(
         flatten_args[0] = gi_node
         args, kwargs = tree_unflatten(flatten_args, spec)
         with graph.inserting_after(gi_node):
-            wait_nodes.append(call_function(graph, last_wait_node.target, args, kwargs))
+            wait_nodes.append(
+                call_function(
+                    graph, torch.ops._c10d_functional.wait_tensor.default, args, kwargs
+                )
+            )
 
     # Move the new all_reduce_coalesced and its args to right after the input node
     nodes_to_move = [fused_comm_node] + getitem_nodes + wait_nodes
@@ -371,7 +408,24 @@ def _scatter_fused_allreduce_waits(
                 incorrect_order_nodes.append(user_node)
                 nodes.extend(list(user_node.users))
 
-        orig_wait.replace_all_uses_with(fused_output)
+        if is_with_effects_wait_tensor(orig_wait):
+            with_effects_out_token, with_effects_result = get_with_effects_users(
+                orig_wait
+            )
+
+            if with_effects_out_token is not None:
+                graph = orig_wait.graph
+                with graph.inserting_after(orig_wait):
+                    make_token = graph.call_function(
+                        torch.ops.prims._make_token.default
+                    )
+                    with_effects_out_token.replace_all_uses_with(make_token)
+                    graph.erase_node(with_effects_out_token)
+
+            with_effects_result.replace_all_uses_with(fused_output)
+            graph.erase_node(with_effects_result)
+        else:
+            orig_wait.replace_all_uses_with(fused_output)
 
     last_fused_result = fused_outputs[0]
     fused_outputs_set = set(fused_outputs)
@@ -426,6 +480,9 @@ def _fuse_allreduce(
 
     for comm_block in comm_blocks:
         for wait in comm_block.wait_nodes:
+            if is_with_effects_wait_tensor(wait) and len(wait.users) != 0:
+                out_token, out_result = get_with_effects_users(wait)
+
             graph.erase_node(wait)
         graph.erase_node(comm_block.comm_node)
     graph.eliminate_dead_code()
@@ -486,7 +543,11 @@ def _fuse_ddp_communication(
         ):
             return False
 
-        if len(block.wait_nodes[0].users) != 1:
+        wait_node = block.wait_nodes[0]
+        if is_with_effects_wait_tensor(wait_node):
+            _, wait_node = get_with_effects_users(wait_node)
+
+        if len(wait_node.users) != 1:
             # gradient/wait node should only be used by one user
             return False
 
@@ -495,8 +556,8 @@ def _fuse_ddp_communication(
         # if gradient is None before bwd.
         # 2. gradient/wait node should be directly used by copy_.
         if (
-            output not in block.wait_nodes[0].users
-            and next(iter(block.wait_nodes[0].users)).target != aten.copy_.default
+            output not in wait_node.users
+            and next(iter(wait_node.users)).target != aten.copy_.default
         ):
             return False
 

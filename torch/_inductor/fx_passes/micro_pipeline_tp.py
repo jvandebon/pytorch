@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast, Dict, List, Optional, Set
 
 import torch
+from torch._functorch._aot_autograd.utils import get_with_effects_users, is_with_effects
 
 from .. import config, inductor_prims
 from ..pattern_matcher import (
@@ -69,14 +70,35 @@ class _AllGatherMatch:
     res_node: torch.fx.Node
     gather_dim: int
     group_name: str
+    with_effects: Optional[torch.fx.Node] = None
 
     def replace_with(self, new_node: torch.fx.Node) -> None:
+        if self.with_effects:
+            graph = new_node.graph
+            with graph.inserting_before(new_node):
+                make_token = graph.call_function(torch.ops.prims._make_token.default)
+            with_effects_out_token, with_effects_result = get_with_effects_users(
+                self.with_effects
+            )
+            with_effects_out_token.replace_all_uses_with(make_token)
+            graph.erase_node(with_effects_out_token)
+            with_effects_result.replace_all_uses_with(new_node)
+            graph.erase_node(with_effects_result)
+
         self.res_node.replace_all_uses_with(new_node)
 
     def erase(self) -> None:
         for node in reversed(self.match.nodes):
             if len(node.users) == 0:
                 node.graph.erase_node(node)
+
+
+def make_with_effects_result_pattern(with_effects):
+    return CallFunction(
+        operator.getitem,
+        with_effects,
+        Ignored(),
+    )
 
 
 def find_all_gather_patterns(graph: torch.fx.Graph):
@@ -93,8 +115,25 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
             ),
         )
 
+    def make_with_effects_zero_dim_all_gather_pattern(shard):
+        return CallFunction(
+            torch.ops.higher_order.with_effects,
+            Ignored(),
+            c10d.wait_tensor.default,
+            CallFunction(
+                c10d.all_gather_into_tensor.default,
+                shard,
+                Ignored(),
+                KeywordArg("group_name"),
+            ),
+            _users=MULTIPLE,
+        )
+
     # Matches funcol.all_gather_tensor with gather_dim == 0
     zero_dim_all_gather_pattern = make_zero_dim_all_gather_pattern(KeywordArg("shard"))
+    with_effects_zero_dim_all_gather_pattern = (
+        make_with_effects_zero_dim_all_gather_pattern(KeywordArg("shard"))
+    )
 
     def make_all_gather_split_pattern(shard):
         return CallFunction(
@@ -102,6 +141,20 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
             CallFunction(
                 aten.split.Tensor,
                 make_zero_dim_all_gather_pattern(shard),
+                Ignored(),
+                _users=MULTIPLE,
+            ),
+            Ignored(),
+        )
+
+    def make_with_effects_all_gather_split_pattern(shard):
+        return CallFunction(
+            operator.getitem,
+            CallFunction(
+                aten.split.Tensor,
+                make_with_effects_result_pattern(
+                    make_with_effects_zero_dim_all_gather_pattern(shard),
+                ),
                 Ignored(),
                 _users=MULTIPLE,
             ),
@@ -119,6 +172,9 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
     non_zero_dim_all_gather_pattern = make_cat_pattern(
         make_all_gather_split_pattern(KeywordArg("shard")),
     )
+    with_effects_non_zero_dim_all_gather_pattern = make_cat_pattern(
+        make_with_effects_all_gather_split_pattern(KeywordArg("shard")),
+    )
 
     # Match a zero-dim all-gather in which the data is transferred as uint8 and
     # viewed back as the original dtype.
@@ -126,6 +182,16 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
         aten.view.dtype,
         make_zero_dim_all_gather_pattern(
             KeywordArg("shard"),
+        ),
+        Ignored(),
+    )
+
+    with_effects_zero_dim_type_erased_all_gather_pattern = CallFunction(
+        aten.view.dtype,
+        make_with_effects_result_pattern(
+            make_zero_dim_all_gather_pattern(
+                KeywordArg("shard"),
+            )
         ),
         Ignored(),
     )
@@ -145,6 +211,19 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
         ),
         Ignored(),
     )
+    with_effects_non_zero_dim_type_erased_all_gather_pattern = CallFunction(
+        aten.view.dtype,
+        make_cat_pattern(
+            CallFunction(
+                aten.view.dtype,
+                make_with_effects_all_gather_split_pattern(
+                    KeywordArg("shard"),
+                ),
+                Ignored(),
+            ),
+        ),
+        Ignored(),
+    )
 
     # If two patterns with the same res_node_target have the same suffix, the
     # longer pattern should appear first in the list.
@@ -152,25 +231,32 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
     # should appear before (2) in the list.
     res_node_target_to_patterns = {
         aten.cat.default: [
-            (non_zero_dim_all_gather_pattern, 0),
+            (non_zero_dim_all_gather_pattern, 0, False),
+            (with_effects_non_zero_dim_all_gather_pattern, 0, True),
         ],
         aten.view.dtype: [
-            (non_zero_dim_type_erased_all_gather_pattern, 0),
-            (zero_dim_type_erased_all_gather_pattern, 0),
+            (non_zero_dim_type_erased_all_gather_pattern, 0, False),
+            (zero_dim_type_erased_all_gather_pattern, 0, False),
+            (with_effects_non_zero_dim_type_erased_all_gather_pattern, 0, True),
+            (with_effects_zero_dim_type_erased_all_gather_pattern, 0, True),
         ],
         c10d.wait_tensor.default: [
-            (zero_dim_all_gather_pattern, 0),
+            (zero_dim_all_gather_pattern, 0, False),
+        ],
+        torch.ops.higher_order.with_effects: [
+            (with_effects_zero_dim_all_gather_pattern, 0, True),
         ],
     }
 
     # Match in reverse to ensure longer patterns is prioritized
     all_gathers = []
     visited_ag_nodes = set()
+
     for node in reversed(graph.nodes):
         for target, patterns in res_node_target_to_patterns.items():
             if node.target != target:
                 continue
-            for pattern, ag_node_idx in patterns:
+            for pattern, ag_node_idx, is_with_effects_pattern in patterns:
                 match = pattern.match(node)
                 if not match:
                     continue
@@ -190,6 +276,9 @@ def find_all_gather_patterns(graph: torch.fx.Graph):
                     res_node=node,
                     gather_dim=match.kwargs.get("gather_dim", 0),
                     group_name=match.kwargs["group_name"],
+                    with_effects=match.nodes[ag_node_idx + 1]
+                    if is_with_effects_pattern
+                    else None,
                 )
                 all_gathers.append(ag_match)
 
@@ -207,12 +296,37 @@ class _ReduceScatterMatch:
     group_name: str
 
     def replace_with(self, new_node: torch.fx.Node) -> None:
-        self.res_node.replace_all_uses_with(new_node)
+        if is_with_effects(self.res_node):
+            with_effects_out_token, with_effects_result = get_with_effects_users(
+                self.res_node
+            )
+
+            graph = new_node.graph
+            with graph.inserting_after(new_node):
+                make_token = graph.call_function(torch.ops.prims._make_token.default)
+                with_effects_out_token.replace_all_uses_with(make_token)
+                graph.erase_node(with_effects_out_token)
+            with_effects_result.replace_all_uses_with(new_node)
+            graph.erase_node(with_effects_result)
+        else:
+            self.res_node.replace_all_uses_with(new_node)
 
     def erase(self) -> None:
         for node in reversed(self.match.nodes):
             if len(node.users) == 0:
                 node.graph.erase_node(node)
+
+        if is_with_effects(self.res_node) and self.res_node.users:
+            token, res = get_with_effects_users(self.res_node)
+            graph = self.res_node.graph
+            graph.erase_node(token)
+            graph.erase_node(res)
+
+
+def make_with_effects_pattern(op, wait_tensor_pattern: PatternExpr):
+    return CallFunction(
+        torch.ops.higher_order.with_effects, Ignored(), op, wait_tensor_pattern
+    )
 
 
 def find_reduce_scatter_patterns(graph: torch.fx.Graph):
@@ -220,22 +334,35 @@ def find_reduce_scatter_patterns(graph: torch.fx.Graph):
 
     def reduce_scatter_template(inp: PatternExpr):
         return CallFunction(
+            c10d.reduce_scatter_tensor.default,
+            inp,
+            KeywordArg("reduce_op"),
+            Ignored(),
+            KeywordArg("group_name"),
+        )
+
+    def wait_tensor_reduce_scatter_template(inp: PatternExpr):
+        return CallFunction(
             c10d.wait_tensor.default,
-            CallFunction(
-                c10d.reduce_scatter_tensor.default,
-                inp,
-                KeywordArg("reduce_op"),
-                Ignored(),
-                KeywordArg("group_name"),
-            ),
+            reduce_scatter_template(inp),
+        )
+
+    def with_effects_reduce_scatter_template(inp: PatternExpr):
+        return make_with_effects_pattern(
+            c10d.wait_tensor.default,
+            reduce_scatter_template(inp),
         )
 
     # Matches funcol.reduce_scatter_tensor with scatter_dim == 0
-    zero_dim_reduce_scatter_pattern = reduce_scatter_template(KeywordArg("input"))
+    zero_dim_reduce_scatter_pattern = wait_tensor_reduce_scatter_template(
+        KeywordArg("input")
+    )
+    with_effects_zero_dim_reduce_scatter_pattern = with_effects_reduce_scatter_template(
+        KeywordArg("input")
+    )
 
-    # Matches funcol.reduce_scatter_tensor with scatter_dim > 0
-    non_zero_dim_reduce_scatter_pattern = reduce_scatter_template(
-        CallFunction(
+    def cat_split_pattern():
+        return CallFunction(
             aten.cat.default,
             ListOf(
                 CallFunction(
@@ -250,38 +377,57 @@ def find_reduce_scatter_patterns(graph: torch.fx.Graph):
                     Ignored(),
                 )
             ),
-        ),
+        )
+
+    # Matches funcol.reduce_scatter_tensor with scatter_dim > 0
+    non_zero_dim_reduce_scatter_pattern = wait_tensor_reduce_scatter_template(
+        cat_split_pattern()
+    )
+    with_effects_non_zero_dim_reduce_scatter_pattern = (
+        with_effects_reduce_scatter_template(
+            cat_split_pattern(),
+        )
     )
 
     reduce_scatters = []
+
+    def _reduce_scatter_match_non_zero_dim(match: Match, node: torch.fx.Node):
+        return _ReduceScatterMatch(
+            match=match,
+            input_node=match.kwargs["input"],
+            rs_node=match.nodes[-2],
+            res_node=node,
+            reduce_op=match.kwargs["reduce_op"],
+            scatter_dim=match.kwargs["scatter_dim"],
+            group_name=match.kwargs["group_name"],
+        )
+
+    def _reduce_scatter_match_zero_dim(match: Match, node: torch.fx.Node):
+        return _ReduceScatterMatch(
+            match=match,
+            input_node=match.kwargs["input"],
+            rs_node=match.nodes[0],
+            res_node=node,
+            reduce_op=match.kwargs["reduce_op"],
+            scatter_dim=0,
+            group_name=match.kwargs["group_name"],
+        )
+
     for node in reversed(graph.nodes):
         if node.target == c10d.wait_tensor.default:
             if match := non_zero_dim_reduce_scatter_pattern.match(node):
                 assert isinstance(match, Match)
-                reduce_scatters.append(
-                    _ReduceScatterMatch(
-                        match=match,
-                        input_node=match.kwargs["input"],
-                        rs_node=match.nodes[-2],
-                        res_node=node,
-                        reduce_op=match.kwargs["reduce_op"],
-                        scatter_dim=match.kwargs["scatter_dim"],
-                        group_name=match.kwargs["group_name"],
-                    )
-                )
+                reduce_scatters.append(_reduce_scatter_match_non_zero_dim(match, node))
             elif match := zero_dim_reduce_scatter_pattern.match(node):
                 assert isinstance(match, Match)
-                reduce_scatters.append(
-                    _ReduceScatterMatch(
-                        match=match,
-                        input_node=match.kwargs["input"],
-                        rs_node=match.nodes[0],
-                        res_node=node,
-                        reduce_op=match.kwargs["reduce_op"],
-                        scatter_dim=0,
-                        group_name=match.kwargs["group_name"],
-                    )
-                )
+                reduce_scatters.append(_reduce_scatter_match_zero_dim(match, node))
+        elif node.target == torch.ops.higher_order.with_effects:
+            if match := with_effects_non_zero_dim_reduce_scatter_pattern.match(node):
+                assert isinstance(match, Match)
+                reduce_scatters.append(_reduce_scatter_match_non_zero_dim(match, node))
+            elif match := with_effects_zero_dim_reduce_scatter_pattern.match(node):
+                assert isinstance(match, Match)
+                reduce_scatters.append(_reduce_scatter_match_zero_dim(match, node))
     return list(reversed(reduce_scatters))
 
 
@@ -450,6 +596,9 @@ def _find_consumer_matmuls(node: torch.fx.Node) -> List[_Matmul]:
     """
     Find the matmuls that use `node` as the lhs argument.
     """
+    if is_with_effects(node):
+        _, node = get_with_effects_users(node)
+
     matmuls = []
     for user in node.users:
         # ND matmuls
@@ -524,7 +673,6 @@ def fuse_all_gather_matmul(all_gather: _AllGatherMatch) -> None:
     ):
         return
 
-    c10d = torch.ops._c10d_functional
     from torch.distributed._symmetric_memory import (
         is_symm_mem_enabled_for_group,
         restride_A_shard_for_fused_all_gather_matmul,
