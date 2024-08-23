@@ -410,7 +410,8 @@ double ord_to_double(const Scalar& ord) {
     return ord.to<double>();
   } else {
     TORCH_CHECK(
-        false, "foreach_tensor_norm_cuda expects ord to be integer or float");
+        false,
+        "foreach implementation of norm expects ord to be integer or float");
   }
 }
 

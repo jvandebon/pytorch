@@ -459,9 +459,23 @@ Tensor foreach_tensor_global_norm_slow(
   check_foreach_api_restrictions(tensors);
   std::vector<Tensor> result;
   for (const auto& t : tensors) {
-    result.emplace_back(at::linalg_vector_norm(t, ord, {}, true, dtype).view({-1}));
+    result.emplace_back(
+        at::linalg_vector_norm(t, ord, {}, true, dtype).view({-1}));
   }
-  return at::linalg_vector_norm(at::cat(result, 0), ord, {}, false, dtype);
+  const double p = [](const Scalar& lp) -> double {
+    if (lp.isIntegral(false)) {
+      return lp.to<int64_t>();
+    } else if (lp.isFloatingPoint()) {
+      return lp.to<double>();
+    } else {
+      TORCH_CHECK(false, "foreach_ expects ord to be integer or float");
+    }
+  }(ord);
+  if (p == 0.0) {
+    return at::cat(result, 0).sum();
+  } else {
+    return at::linalg_vector_norm(at::cat(result, 0), ord, {}, false, dtype);
+  }
 }
 
 std::vector<Tensor> foreach_tensor_max_slow(TensorList tensors) {
