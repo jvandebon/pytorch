@@ -13,6 +13,7 @@ from ..decorators import substitute_in_graph
 __all__ = [
     "chain___new__",
     "chain_from_iterable",
+    "count___new__",
     "tee",
 ]
 
@@ -35,6 +36,21 @@ def chain___new__(
 @substitute_in_graph(itertools.chain.from_iterable)  # type: ignore[arg-type]
 def chain_from_iterable(iterable: Iterable[Iterable[_T]], /) -> Iterator[_T]:
     return itertools.chain(*iterable)
+
+
+# Reference: https://docs.python.org/3/library/itertools.html#itertools.count
+@substitute_in_graph(itertools.count.__new__)  # type: ignore[arg-type]
+def count___new__(
+    cls: type[itertools.count[_T]],  # type: ignore[type-var]
+    start: _T = 0,  # type: ignore[assignment]
+    step: _T = 1,  # type: ignore[assignment]
+) -> Iterator[_T]:
+    assert cls is itertools.count
+
+    n = start
+    while True:
+        yield n
+        n += step  # type: ignore[operator]
 
 
 # Reference: https://docs.python.org/3/library/itertools.html#itertools.tee
