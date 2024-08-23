@@ -59,7 +59,7 @@ class TestFullyShardGradientScaler(FSDPTest):
         steped_state = copy.copy(opt.state)
         if has_inf:
             # assert parameters are the same before/after
-            self.assertEqual(steped_state.items(), initial_state.items())
+            self.assertEqual(steped_state, initial_state)
         else:
             # new parameters here if no inf found during .unscale_()
             self.assertNotEqual(steped_state.items(), initial_state.items())

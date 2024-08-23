@@ -231,6 +231,7 @@ class OpDispatcher:
             if output_sharding.output_spec is not None:
                 return args[0]
             else:
+                # TODO: this would only work for 1-d mesh
                 if op_call == aten._amp_foreach_non_finite_check_and_unscale_.default:
                     found_inf = args[1]
                     work = mesh.get_group().allreduce(found_inf)  # type: ignore[call-overload]
