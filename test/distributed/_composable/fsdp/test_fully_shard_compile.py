@@ -748,6 +748,7 @@ class TestFullyShardCompile(FSDPTest):
                     "Expected two separate lowerings to Triton code, one from FWD graph and one from Compiled Autograd BWD graph",
                 )
                 fwd_code = triton_codes[0]
+                print(f"fwd_code: {fwd_code}")
                 file_check = FileCheck().check("def call(args):")
                 for fwd_ag_block_info in [
                     dict(
