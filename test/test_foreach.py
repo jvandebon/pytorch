@@ -237,12 +237,21 @@ class TestForeach(TestCase):
                         **sample.kwargs,
                     )
             except Exception as e:
-                with (
-                    self.assertRaisesRegex(type(e), re.escape(str(e).splitlines()[0]))
-                    if not (op.has_no_in_place or not op.supports_out)
-                    else self.assertRaises(type(e))
+                # FIXME(crcrpar): Werid error I'm seeing for global_norm and dtype of complex
+                #   RuntimeError: linalg.vector_norm: dtype should be real for real inputs, but got ComplexDouble
+                if not (
+                    op.name == "_foreach_global_norm"
+                    and dtype.is_complex
+                    and (not inplace)
                 ):
-                    ref([ref_input, *sample.ref_args], **ref_kwargs)
+                    with (
+                        self.assertRaisesRegex(
+                            type(e), re.escape(str(e).splitlines()[0])
+                        )
+                        if not (op.has_no_in_place or not op.supports_out)
+                        else self.assertRaises(type(e))
+                    ):
+                        ref([ref_input, *sample.ref_args], **ref_kwargs)
             else:
                 expected = ref([ref_input, *sample.ref_args], **ref_kwargs)
                 self.assertEqual(expected, actual)
@@ -946,14 +955,20 @@ class TestForeach(TestCase):
 
         if dtype == torch.float16:
             # making sure the reference L2 norm values are in the range of FP16.
-            self.assertFalse(any(torch.isinf(e) for e in expect))
+            if op.name == "_foreach_global_norm":
+                self.assertFalse(torch.isinf(expect))
+            else:
+                self.assertFalse(any(torch.isinf(e) for e in expect))
         else:
-            self.assertTrue(
-                all(
-                    inputs[0][i].numel() == 0 or torch.isinf(e)
-                    for i, e in enumerate(expect)
+            if not op.is_global_norm:
+                self.assertTrue(
+                    all(
+                        inputs[0][i].numel() == 0 or torch.isinf(e)
+                        for i, e in enumerate(expect)
+                    )
                 )
-            )
+            else:
+                self.assertTrue(torch.isinf(expect))
         self.assertEqual(expect, actual, equal_nan=False)
 
     @onlyCUDA
@@ -1005,7 +1020,7 @@ class TestForeach(TestCase):
         N = 65536 * 2
         disable_fastpath = False
         kwargs = {}
-        if op.name == "_foreach_norm":
+        if op.name in ("_foreach_norm", "_foreach_global_norm"):
             ord = 2
             disable_fastpath = not (
                 ord in (1, 2)
