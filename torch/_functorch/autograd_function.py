@@ -719,24 +719,54 @@ class AutogradFunctionApply(HigherOrderOperator):
     def __call__(self, fwd, bwd, *fwd_args, **fwd_kwargs):
         saved_values = None
         args_tensor_mask = fwd_kwargs["args_tensor_mask"]
+        is_setup_ctx_defined = fwd_kwargs["is_setup_ctx_defined"]
+        original_generate_vmap_rule = fwd_kwargs["generate_vmap_rule"]
         length_of_tensor_args = sum(args_tensor_mask)
         # Filter out the original tensor args from fwd_args,
         # lifted freevars should not be args of ApplyTemplate.apply
         # since we don't need to calculate the gradients of them.
         new_fwd_args = fwd_args[:length_of_tensor_args]
 
-        class ApplyTemplate(torch.autograd.Function):
-            @staticmethod
-            def forward(ctx, *args):
-                nonlocal saved_values
-                output, saved_values = fwd(None, *fwd_args)
-                return output
+        if is_setup_ctx_defined:
 
-            @staticmethod
-            def backward(ctx, *grad):
-                return bwd(None, *grad, *saved_values)
+            class ApplyTemplate(torch.autograd.Function):
+                nonlocal original_generate_vmap_rule
+                generate_vmap_rule = original_generate_vmap_rule
 
-        return ApplyTemplate.apply(*new_fwd_args)
+                @staticmethod
+                def forward(*args):
+                    nonlocal saved_values
+                    output, saved_values = fwd(None, *fwd_args)
+                    return output
+
+                @staticmethod
+                def setup_context(ctx, inputs, output):
+                    nonlocal saved_values
+                    ctx.save_for_backward(*saved_values)
+
+                @staticmethod
+                def backward(ctx, *grad):
+                    saved_values = ctx.saved_tensors
+                    return bwd(None, *grad, *saved_values)
+
+            return ApplyTemplate.apply(*new_fwd_args)
+        else:
+
+            class ApplyTemplate(torch.autograd.Function):  # type: ignore[no-redef]
+                nonlocal original_generate_vmap_rule
+                generate_vmap_rule = original_generate_vmap_rule
+
+                @staticmethod
+                def forward(ctx, *args):
+                    nonlocal saved_values
+                    output, saved_values = fwd(None, *fwd_args)
+                    return output
+
+                @staticmethod
+                def backward(ctx, *grad):
+                    return bwd(None, *grad, *saved_values)
+
+            return ApplyTemplate.apply(*new_fwd_args)
 
 
 autograd_function_apply = AutogradFunctionApply()

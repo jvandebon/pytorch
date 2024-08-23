@@ -1750,8 +1750,9 @@ class FlexAttentionHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
 
 class AutogradFunctionApplyVariable(VariableTracker):
-    def __init__(self, fwd_graph, bwd_graph, parent_source, **kwargs) -> None:
+    def __init__(self, fn_cls, fwd_graph, bwd_graph, parent_source, **kwargs) -> None:
         super().__init__(**kwargs)
+        self.fn_cls = fn_cls
         self.fwd_graph = fwd_graph
         self.bwd_graph = bwd_graph
         self.parent_source = parent_source
@@ -1802,6 +1803,7 @@ class AutogradFunctionApplyVariable(VariableTracker):
         """
 
         prev_side_effects = tx.output.side_effects.clone()
+
         fwd_tracer = torch._dynamo.output_graph.SubgraphTracer(
             tx.output,
             parent=tx.output.current_tracer,
@@ -1999,6 +2001,11 @@ class AutogradFunctionApplyVariable(VariableTracker):
 
         tx.output.side_effects = prev_side_effects
 
+        from torch.autograd.function import _is_setup_context_defined
+
+        is_setup_ctx_defined = _is_setup_context_defined(self.fn_cls.setup_context)
+        generate_vmap_rule = self.fn_cls.generate_vmap_rule
+
         p_args = (
             fwd_node,
             bwd_node,
@@ -2019,7 +2026,11 @@ class AutogradFunctionApplyVariable(VariableTracker):
                 "call_function",
                 autograd_function_apply,
                 args=p_args,
-                kwargs={"args_tensor_mask": args_tensor_mask},
+                kwargs={
+                    "args_tensor_mask": args_tensor_mask,
+                    "is_setup_ctx_defined": is_setup_ctx_defined,
+                    "generate_vmap_rule": generate_vmap_rule,
+                },
             ),
             example_value=example_value,
         )
