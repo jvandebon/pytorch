@@ -2805,7 +2805,7 @@ class ForeachFuncInfo(OpInfo):
             torch_ref_method,
             torch_ref_inplace,
         ) = get_foreach_method_names(self.name)
-        if not self.supports_out:
+        if not self.supports_out and self.name != "global_norm":
             # note(crcrpar): `foreach_method` for `"zero"` is `None` but `None` would call
             # `_getattr_qual` in `OpInfo.__post_init__` which should fail since `_foreach_zero`
             # is not defined at the moment. Thus to skip the qualification, set a similar torch
