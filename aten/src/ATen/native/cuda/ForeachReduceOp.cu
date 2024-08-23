@@ -257,25 +257,47 @@ std::pair<std::vector<Tensor>, Tensor> _foreach_tensor_norm_cuda_impl(
   const auto options = tensors[0].options();
   const ScalarType output_dtype =
       dtype.has_value() ? dtype.value() : tensors[0].scalar_type();
-  const ScalarType output_per_tensor_dtype = toOpMathType(output_dtype);
-  auto output_per_tensor = at::zeros(
-      {static_cast<int64_t>(ntensors) * max_chunks_per_tensor},
-      options.dtype(output_per_tensor_dtype));
-  auto global_output = at::zeros({320}, options.dtype(output_per_tensor_dtype));
+  const ScalarType opmath_output_dtype = toOpMathType(output_dtype);
+  const auto opmath_t_options = options.dtype(opmath_output_dtype);
+
+  auto output_per_tensor = at::native::empty_cuda(
+      {},
+      optTypeMetaToScalarType(opmath_t_options.dtype_opt()),
+      opmath_t_options.layout_opt(),
+      opmath_t_options.device_opt(),
+      opmath_t_options.pinned_memory_opt(),
+      opmath_t_options.memory_format_opt());
+  auto global_output = at::native::empty_cuda(
+      {},
+      optTypeMetaToScalarType(opmath_t_options.dtype_opt()),
+      opmath_t_options.layout_opt(),
+      opmath_t_options.device_opt(),
+      opmath_t_options.pinned_memory_opt(),
+      opmath_t_options.memory_format_opt());
+  if (calculate_norm_per_tensor) {
+    output_per_tensor = at::zeros(
+        {static_cast<int64_t>(ntensors) * max_chunks_per_tensor},
+        opmath_t_options);
+  }
+  if (calculate_global_norm) {
+    global_output = at::zeros({320}, opmath_t_options);
+  }
 
   auto tensor_lists = std::vector<std::vector<Tensor>>{tensors.vec()};
 
-  std::vector<at::Tensor> vec_res;
-  vec_res.reserve(ntensors);
   const auto res_option = options.dtype(output_dtype);
-  for (const auto i : c10::irange(ntensors)) {
-    vec_res.push_back(at::native::empty_cuda(
-        {},
-        optTypeMetaToScalarType(res_option.dtype_opt()),
-        res_option.layout_opt(),
-        res_option.device_opt(),
-        res_option.pinned_memory_opt(),
-        res_option.memory_format_opt()));
+  std::vector<at::Tensor> vec_res;
+  if (calculate_norm_per_tensor) {
+    vec_res.reserve(ntensors);
+    for (const auto i : c10::irange(ntensors)) {
+      vec_res.push_back(at::native::empty_cuda(
+          {},
+          optTypeMetaToScalarType(res_option.dtype_opt()),
+          res_option.layout_opt(),
+          res_option.device_opt(),
+          res_option.pinned_memory_opt(),
+          res_option.memory_format_opt()));
+    }
   }
   auto global_norm = at::native::empty_cuda(
       {},
