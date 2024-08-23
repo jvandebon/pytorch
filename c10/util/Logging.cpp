@@ -24,6 +24,11 @@ C10_DEFINE_bool(
     "of throwing an exception.");
 
 namespace c10 {
+#if defined(FBCODE_CAFFE2)
+static const int GLOG_FATAL = google::GLOG_FATAL;
+static const int GLOG_WARNING = google::GLOG_WARNING;
+static const auto GLOG_INFO = google::GLOG_INFO;
+#endif
 
 namespace {
 std::function<::c10::Backtrace()>& GetFetchStackTrace() {
@@ -275,7 +280,6 @@ C10_DEFINE_int(
     "The minimum log level that caffe2 will output.");
 
 namespace c10 {
-
 void initLogging() {
   detail::setLogLevelFlagFromEnv();
 }
