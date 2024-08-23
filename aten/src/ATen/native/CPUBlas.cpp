@@ -822,4 +822,80 @@ void copy(int64_t n, const c10::complex<float> *x, int64_t incx, c10::complex<fl
       n, x, incx, y, incy);
 }
 
-}  // namespace at::native::cpublas
+void brgemm(
+    int64_t M,
+    int64_t N,
+    int64_t K,
+    int64_t ld_a,
+    int64_t ld_b,
+    int64_t ld_c,
+    const float alpha,
+    const float beta,
+    const at::Half* A,
+    const at::Half* B,
+    float* C) {
+#if AT_MKLDNN_ENABLED() && (defined(__x86_64__) || (defined(_M_X64) && !defined(_M_ARM64EC)))
+  if (Brgemm::device_check(ScalarType::Half)) {
+    Brgemm::call<at::Half, at::Half, float>(
+      M, N, K, ld_a, ld_b, ld_c, alpha, beta, A, B, C);
+    return;
+  }
+#endif
+  TORCH_CHECK(false,
+  "Half Brgemm is only supported on X64 when mkldnn is enabled and avx512_fp16 is supported");
+}
+
+void brgemm(
+    int64_t M,
+    int64_t N,
+    int64_t K,
+    int64_t ld_a,
+    int64_t ld_b,
+    int64_t ld_c,
+    const float alpha,
+    const float beta,
+    const at::BFloat16* A,
+    const at::BFloat16* B,
+    float* C) {
+#if AT_MKLDNN_ENABLED() && (defined(__x86_64__) || (defined(_M_X64) && !defined(_M_ARM64EC)))
+  if (Brgemm::device_check(ScalarType::BFloat16)) {
+    Brgemm::call<at::BFloat16, at::BFloat16, float>(
+      M, N, K, ld_a, ld_b, ld_c, alpha, beta, A, B, C);
+    return;
+  }
+#endif
+  TORCH_CHECK(false,
+  "BFloat16 Brgemm is only supported on X64 when mkldnn is enabled and avx512 is supported");
+}
+
+void brgemm_release() {
+#if AT_MKLDNN_ENABLED() && (defined(__x86_64__) || (defined(_M_X64) && !defined(_M_ARM64EC)))
+  dnnl::ukernel::brgemm::release_hw_context();
+#endif
+}
+
+void pack(
+    int64_t K,
+    int64_t N,
+    int64_t ld_in,
+    int64_t ld_out,
+    ScalarType dt_in,
+    ScalarType dt_out,
+    const void* in,
+    void* out) {
+#if AT_MKLDNN_ENABLED() && (defined(__x86_64__) || (defined(_M_X64) && !defined(_M_ARM64EC)))
+  Pack::call(K, N, ld_in, ld_out, dt_in, dt_out, in, out);
+#else
+  TORCH_CHECK(false, "pack is only supported on X64 with oneDNN enabled");
+#endif
+}
+
+bool need_pack(ScalarType dt_in) {
+#if AT_MKLDNN_ENABLED() && (defined(__x86_64__) || (defined(_M_X64) && !defined(_M_ARM64EC)))
+  return Pack::need_pack(dt_in);
+#else
+  return false;
+#endif
+}
+
+} // namespace at::native::cpublas
