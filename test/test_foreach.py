@@ -48,8 +48,9 @@ _BOOL_SUB_ERR_MSG = "Subtraction, the `-` operator"
 
 
 class RegularFuncWrapper:
-    def __init__(self, func):
+    def __init__(self, func, *, is_global_norm: bool = False):
         self.func = func
+        self.is_global_norm = is_global_norm
 
     def __call__(self, inputs, scalars=None, **kwargs):
         if scalars is not None:
@@ -65,6 +66,13 @@ class RegularFuncWrapper:
         if len(inputs) == 2 and isinstance(inputs[1], (Number, torch.Tensor)):
             # binary op with tensorlist and scalar.
             inputs[1] = [inputs[1] for _ in range(len(inputs[0]))]
+        if self.is_global_norm:
+            assert len(inputs) == 1
+            tensors = inputs[0]
+            concat_tensor = torch.cat([t.view(-1) for t in tensors])
+            ord = kwargs["ord"]
+            dtype = kwargs["dtype"]
+            return self.func(concat_tensor, ord=ord, dtype=dtype)
         return [self.func(*i, **kwargs) for i in zip(*inputs)]
 
 
@@ -145,9 +153,9 @@ class TestForeach(TestCase):
     def _get_funcs(self, op):
         return (
             ForeachFuncWrapper(op.method_variant),
-            RegularFuncWrapper(op.ref),
+            RegularFuncWrapper(op.ref, is_global_norm=op.is_global_norm),
             ForeachFuncWrapper(op.inplace_variant),
-            RegularFuncWrapper(op.ref_inplace),
+            RegularFuncWrapper(op.ref_inplace, is_global_norm=op.is_global_norm),
         )
 
     # note(crcrpar): Make sure 0-size tensors are appropriately ignored by `multi_tensor_apply`

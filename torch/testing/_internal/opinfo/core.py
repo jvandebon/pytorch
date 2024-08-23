@@ -2826,7 +2826,7 @@ class ForeachFuncInfo(OpInfo):
 
         name = self.name
         self.name = f"_foreach_{name}"
-        if name == "norm":
+        if name in {"norm", "global_norm"}:
             self.ref = torch.linalg.vector_norm
         elif name == "minimum":
             # because minimum ref does not support inplace or scalar
@@ -2837,6 +2837,7 @@ class ForeachFuncInfo(OpInfo):
             self.ref = torch.clamp_min
             self.ref_inplace = torch.Tensor.clamp_min_
 
+        self.is_global_norm = name == "global_norm"
         # The following sets `dtypesIfCUDA` and `dtypesIfROCM` accordingly.
         super().__post_init__()
 
