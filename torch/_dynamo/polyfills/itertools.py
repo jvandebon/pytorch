@@ -14,6 +14,7 @@ __all__ = [
     "chain___new__",
     "chain_from_iterable",
     "count___new__",
+    "islice___new__",
     "tee",
 ]
 
@@ -51,6 +52,43 @@ def count___new__(
     while True:
         yield n
         n += step  # type: ignore[operator]
+
+
+# Reference: https://docs.python.org/3/library/itertools.html#itertools.islice
+@substitute_in_graph(itertools.islice.__new__)  # type: ignore[arg-type]
+def islice___new__(
+    cls: type[itertools.islice[_T]],
+    iterable: Iterable[_T],
+    *args: int | None,
+) -> Iterator[_T]:
+    assert cls is itertools.islice
+
+    s = slice(*args)
+    start = 0 if s.start is None else s.start
+    stop = s.stop
+    step = 1 if s.step is None else s.step
+    if start < 0 or (stop is not None and stop < 0) or step <= 0:
+        raise ValueError(
+            "Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.",
+        )
+
+    if stop is None:
+        # TODO: use indices = itertools.count() and merge implementation with the else branch
+        #       when we support infinite iterators
+        i = 0
+        next_i = start
+        for element in iterable:
+            if i == next_i:
+                yield element
+                next_i += step
+            i += 1
+    else:
+        indices = range(max(start, stop))
+        next_i = start
+        for i, element in zip(indices, iterable):
+            if i == next_i:
+                yield element
+                next_i += step
 
 
 # Reference: https://docs.python.org/3/library/itertools.html#itertools.tee

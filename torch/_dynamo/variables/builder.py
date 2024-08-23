@@ -315,6 +315,7 @@ class FrameStateSizeEntry:
 ITERTOOLS_POLYFILLED_CLASSES = {
     itertools.chain,
     itertools.count,
+    itertools.islice,
 }
 
 
