@@ -347,6 +347,7 @@ std::pair<std::vector<Tensor>, Tensor> _foreach_tensor_norm_cuda_impl(
                   lpnorm_cleanup<scalar_t, NormType::L1, out_t>
                       <<<num_tensors_this_kernel, 512, 0, stream>>>(
                           global_norm.mutable_data_ptr<out_t>(),
+                          global_output.const_data_ptr<out_opmath_t>(),
                           output_per_tensor.const_data_ptr<out_opmath_t>() +
                               i * MAX_TENSORS_PER_KERNEL *
                                   max_chunks_per_tensor,
@@ -358,6 +359,7 @@ std::pair<std::vector<Tensor>, Tensor> _foreach_tensor_norm_cuda_impl(
                   lpnorm_cleanup<scalar_t, NormType::L2, out_t>
                       <<<num_tensors_this_kernel, 512, 0, stream>>>(
                           global_norm.mutable_data_ptr<out_t>(),
+                          global_output.const_data_ptr<out_opmath_t>(),
                           output_per_tensor.const_data_ptr<out_opmath_t>() +
                               i * MAX_TENSORS_PER_KERNEL *
                                   max_chunks_per_tensor,
@@ -369,6 +371,7 @@ std::pair<std::vector<Tensor>, Tensor> _foreach_tensor_norm_cuda_impl(
                   lpnorm_cleanup<scalar_t, NormType::LInf, out_t>
                       <<<num_tensors_this_kernel, 512, 0, stream>>>(
                           global_norm.mutable_data_ptr<out_t>(),
+                          global_output.const_data_ptr<out_opmath_t>(),
                           output_per_tensor.const_data_ptr<out_opmath_t>() +
                               i * MAX_TENSORS_PER_KERNEL *
                                   max_chunks_per_tensor,
@@ -415,7 +418,7 @@ double ord_to_double(const Scalar& ord) {
   }
 }
 
-bool can_use_mta_impl(TensorList tensors, const double& p) {
+bool use_slowpath(TensorList tensors, const double& p) {
   const bool has_int_or_complex =
       std::any_of(tensors.begin(), tensors.end(), [](const auto& t) {
         const auto scalar_type = t.scalar_type();
@@ -435,7 +438,7 @@ std::vector<Tensor> foreach_tensor_norm_cuda(
     std::optional<ScalarType> dtype) {
   const auto p = ord_to_double(ord);
   check_foreach_api_restrictions(tensors);
-  if (!can_use_mta_impl(tensors, p)) {
+  if (use_slowpath(tensors, p)) {
     return foreach_tensor_norm_slow(tensors, ord, dtype);
   }
   return _foreach_tensor_norm_cuda_impl(
@@ -453,7 +456,7 @@ Tensor foreach_tensor_global_norm_cuda(
     std::optional<ScalarType> dtype) {
   const auto p = ord_to_double(ord);
   check_foreach_api_restrictions(tensors);
-  if (!can_use_mta_impl(tensors, p)) {
+  if (use_slowpath(tensors, p)) {
     return foreach_tensor_global_norm_slow(tensors, ord, dtype);
   }
   return _foreach_tensor_norm_cuda_impl(

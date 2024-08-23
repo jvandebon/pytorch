@@ -70,8 +70,8 @@ class RegularFuncWrapper:
             assert len(inputs) == 1
             tensors = inputs[0]
             concat_tensor = torch.cat([t.view(-1) for t in tensors])
-            ord = kwargs["ord"]
-            dtype = kwargs["dtype"]
+            ord = kwargs.get("ord", 2)
+            dtype = kwargs.get("dtype", None)
             return self.func(concat_tensor, ord=ord, dtype=dtype)
         return [self.func(*i, **kwargs) for i in zip(*inputs)]
 

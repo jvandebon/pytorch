@@ -128,7 +128,11 @@ struct LpNormFunctor {
 
     if (threadIdx.x == 0) {
       if (calculate_global_norm) {
-        global_output_ptr[blockIdx.x] += final_val;
+        if (norm_type == NormType::LInf) {
+          global_output_ptr[blockIdx.x] = max_propagate_nan(final_val, global_output_ptr[blockIdx.x]);
+        } else {
+          global_output_ptr[blockIdx.x] += final_val;
+        }
       }
       if (calculate_norm_per_tensor) {
         output_per_tensor_ptr
@@ -147,6 +151,7 @@ template <
     typename out_opmath_t = at::opmath_type<out_t>>
 __global__ void lpnorm_cleanup(
     out_t* global_norm,
+    const out_opmath_t* global_output,
     const out_opmath_t* output_per_tensor,
     TensorListAddresses addr_struct,
     int max_chunks_per_tensor,
@@ -158,7 +163,7 @@ __global__ void lpnorm_cleanup(
     if (blockIdx.x == 0) {
       out_opmath_t val{0};
       if (threadIdx.x < 320) {
-        val = global_norm[threadIdx.x];
+        val = global_output[threadIdx.x];
       }
       out_opmath_t final_val =
           norm_type == NormType::L1 || norm_type == NormType::L2
